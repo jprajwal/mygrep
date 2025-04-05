@@ -4,6 +4,9 @@ use std::error::Error;
 use std::fs;
 use std::io::{BufRead, BufReader, Lines};
 use std::iter::{Enumerate, Iterator};
+use std::sync::mpsc;
+
+mod thread_pool;
 
 /// mygrep searches for PATTERNS in each FILE
 #[derive(Parser, Debug)]
@@ -223,6 +226,19 @@ fn main() {
         show_line_number: args.line_number,
         no_filename: args.no_filename,
     };
+
+    let n_workers = 4;
+    let n_jobs = 8;
+    let mut pool = thread_pool::ThreadPool::new(n_workers);
+
+    let (tx, rx) = mpsc::channel();
+    for _ in 0..n_jobs {
+        let tx = tx.clone();
+        pool.execute(move|| {
+            tx.send(1).expect("channel will be there waiting for the pool");
+        });
+    }
+    assert_eq!(rx.iter().take(n_jobs).fold(0, |a, b| a + b), 8);
 
     let mut remaining_count = grep_state.max_count as i64;
     // eprintln!("beginning remaining_count = {}", remaining_count);
