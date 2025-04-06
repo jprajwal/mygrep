@@ -2,7 +2,7 @@ use clap::{ArgAction, Parser};
 use std::boxed::Box;
 use std::error::Error;
 use std::fs;
-use std::io::{BufRead, BufReader, Lines};
+use std::io::{BufRead, BufReader, Lines, Write};
 use std::iter::{Enumerate, Iterator};
 use std::sync::mpsc;
 
@@ -62,8 +62,9 @@ fn eprintln(msg: String, ok: bool) {
     }
 }
 
-struct GrepState<'a> {
-    pattern: &'a String,
+#[derive(Clone)]
+struct GrepState {
+    pattern: String,
     ignore_case: bool,
     invert_match: bool,
     no_messages: bool,
@@ -74,12 +75,12 @@ struct GrepState<'a> {
 
 struct GrepIterator<'a, B: BufRead> {
     lines_iter: Enumerate<Lines<B>>,
-    grep_state: &'a GrepState<'a>,
+    grep_state: &'a GrepState,
     filename: String,
 }
 
 impl<'a, B: BufRead> GrepIterator<'a, B> {
-    fn new(e: Enumerate<Lines<B>>, grep_state: &'a GrepState<'a>, filename: String) -> Self {
+    fn new(e: Enumerate<Lines<B>>, grep_state: &'a GrepState, filename: String) -> Self {
         GrepIterator {
             lines_iter: e,
             grep_state,
@@ -101,9 +102,9 @@ impl<'a, B: BufRead> Iterator for GrepIterator<'a, B> {
             let line = line.unwrap();
             let mut flag: bool;
             if self.grep_state.ignore_case {
-                flag = is_case_insensitive_match(self.grep_state.pattern, &line);
+                flag = is_case_insensitive_match(&self.grep_state.pattern, &line);
             } else {
-                flag = is_match(self.grep_state.pattern, &line);
+                flag = is_match(&self.grep_state.pattern, &line);
             }
             if self.grep_state.invert_match {
                 flag = !flag;
@@ -122,7 +123,7 @@ impl<'a, B: BufRead> Iterator for GrepIterator<'a, B> {
 
 fn grep_file<'a>(
     filename: String,
-    grep_state: &'a GrepState<'a>,
+    grep_state: &'a GrepState,
 ) -> Result<GrepIterator<'a, BufReader<fs::File>>, Box<dyn Error>> {
     assert!(fs::exists(&filename).is_ok_and(|x| x));
     let file = fs::File::open(&filename)?;
@@ -134,7 +135,7 @@ fn grep_file<'a>(
     ))
 }
 
-fn print_grep_data<'a>(grep_data: &GrepData, grep_state: &GrepState<'a>) {
+fn print_grep_data<'a>(grep_data: &GrepData, grep_state: &GrepState) {
     if !grep_state.no_filename {
         print!("{}: ", grep_data.filename);
     }
@@ -146,11 +147,11 @@ fn print_grep_data<'a>(grep_data: &GrepData, grep_state: &GrepState<'a>) {
 
 struct GrepDirIterator<'a> {
     stack: Vec<std::io::Result<fs::ReadDir>>,
-    grep_state: &'a GrepState<'a>,
+    grep_state: &'a GrepState,
 }
 
 impl<'a> GrepDirIterator<'a> {
-    fn new(dir_iter: std::io::Result<fs::ReadDir>, grep_state: &'a GrepState<'a>) -> Self {
+    fn new(dir_iter: std::io::Result<fs::ReadDir>, grep_state: &'a GrepState) -> Self {
         GrepDirIterator {
             stack: vec![dir_iter],
             grep_state,
@@ -184,7 +185,6 @@ impl<'a> Iterator for GrepDirIterator<'a> {
             }
             if entry.metadata().unwrap().is_file() {
                 let filename_res = entry.path().into_os_string().into_string();
-                // eprintln!("filename: {:?}", filename_res);
                 self.stack.push(Ok(dir_iter));
                 if filename_res.is_err() {
                     continue;
@@ -195,7 +195,6 @@ impl<'a> Iterator for GrepDirIterator<'a> {
             if entry.metadata().unwrap().is_dir() {
                 let dirname_res = entry.path().into_os_string().into_string();
                 self.stack.push(Ok(dir_iter));
-                // eprintln!("dirname: {:?}", dirname_res);
                 if dirname_res.is_err() {
                     continue;
                 }
@@ -209,84 +208,122 @@ impl<'a> Iterator for GrepDirIterator<'a> {
 
 fn grep_dir<'a>(
     filename: &String,
-    grep_state: &'a GrepState<'a>,
+    grep_state: &'a GrepState,
 ) -> Result<GrepDirIterator<'a>, Box<dyn Error>> {
     assert!(fs::exists(filename).is_ok_and(|x| x));
     Ok(GrepDirIterator::new(fs::read_dir(filename), grep_state))
 }
 
+fn divide_files_by_workers(files: Vec<String>, n_workers: usize) -> Vec<Vec<String>> {
+    let mut result = Vec::new();
+    let mut collected_files = Vec::new();
+    let mut collected_dirs = Vec::new();
+    for file in files.iter() {
+        let metadata = fs::metadata(file).unwrap();
+        if metadata.is_file() {
+            collected_files.push(file.clone());
+        } else if metadata.is_dir() {
+            collected_dirs.push(file.clone());
+        }
+    }
+    result.push(collected_files);
+    let n_workers = n_workers - 1;
+    let per_job = ((collected_dirs.len() as i32 - 1) / n_workers as i32);
+    if per_job < 0 {
+        return result;
+    }
+    let per_job = per_job as usize;
+    for i in 0..n_workers {
+        let start = (per_job + 1) * i;
+        let end = start + (per_job + 1);
+        if end > collected_dirs.len() {
+            return result;
+        }
+        result.push(
+            collected_dirs[start..end]
+                .iter()
+                .map(|item| item.clone())
+                .collect(),
+        );
+    }
+    return result;
+}
+
 fn main() {
     let args = Args::parse();
     let grep_state = GrepState {
-        pattern: &args.pattern,
+        pattern: args.pattern.clone(),
         ignore_case: args.ignore_case,
         invert_match: args.invert_match,
         no_messages: args.no_messages,
-        max_count: args.max_count.map(|x| if x == 0 {u32::MAX} else {x}).unwrap_or(u32::MAX),
+        max_count: args
+            .max_count
+            .map(|x| if x == 0 { u32::MAX } else { x })
+            .unwrap_or(u32::MAX),
         show_line_number: args.line_number,
         no_filename: args.no_filename,
     };
+    let grep_state_clone = grep_state.clone();
 
     let n_workers = 4;
-    let n_jobs = 8;
+    let jobs = divide_files_by_workers(args.file.clone(), n_workers);
     let mut pool = thread_pool::ThreadPool::new(n_workers);
 
     let (tx, rx) = mpsc::channel();
-    for _ in 0..n_jobs {
+    for job in jobs {
         let tx = tx.clone();
-        pool.execute(move|| {
-            tx.send(1).expect("channel will be there waiting for the pool");
+        let grep_state = grep_state.clone();
+        pool.execute(move || {
+            for filename in job {
+                let metadata_res = fs::metadata(&filename);
+                if metadata_res.is_err() {
+                    eprintln(
+                        format!("{}", metadata_res.unwrap_err()),
+                        !grep_state.no_messages,
+                    );
+                    continue;
+                }
+                let metadata = metadata_res.unwrap();
+                if metadata.is_dir() {
+                    match grep_dir(&filename, &grep_state) {
+                        Err(e) => eprintln(format!("{}", e), !grep_state.no_messages),
+                        Ok(dir_iter) => {
+                            for file_res in dir_iter {
+                                if file_res.is_err() {
+                                    eprintln(
+                                        format!("{}", file_res.err().unwrap()),
+                                        !grep_state.no_messages,
+                                    );
+                                    continue;
+                                }
+                                let file = file_res.unwrap();
+                                for grep_data in file {
+                                    if tx.send(grep_data).is_err() {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if metadata.is_file() {
+                    match grep_file(filename.clone(), &grep_state) {
+                        Err(e) => eprintln(format!("{}", e), !grep_state.no_messages),
+                        Ok(iterator) => {
+                            for grep_data in iterator {
+                                if tx.send(grep_data).is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         });
     }
-    assert_eq!(rx.iter().take(n_jobs).fold(0, |a, b| a + b), 8);
-
-    let mut remaining_count = grep_state.max_count as i64;
-    // eprintln!("beginning remaining_count = {}", remaining_count);
-    for filename in &args.file {
-        let metadata_res = fs::metadata(filename);
-        if metadata_res.is_err() {
-            eprintln(
-                format!("{}", metadata_res.unwrap_err()),
-                !grep_state.no_messages,
-            );
-            continue;
-        }
-        let metadata = metadata_res.unwrap();
-        if metadata.is_dir() {
-            match grep_dir(filename, &grep_state) {
-                Err(e) => eprintln(format!("{}", e), !grep_state.no_messages),
-                Ok(dir_iter) => {
-                    for file_res in dir_iter {
-                        if file_res.is_err() {
-                            eprintln(format!("{}", file_res.err().unwrap()), !grep_state.no_messages);
-                            continue;
-                        }
-                        let file = file_res.unwrap();
-                        for grep_data in file {
-                            // eprintln!("grep_data: {:?}, {}", grep_data, remaining_count);
-                            if remaining_count <= 0 {
-                                return;
-                            }
-                            print_grep_data(&grep_data, &grep_state);
-                            remaining_count -= 1;
-                        }
-                    }
-                }
-            }
-        }
-        if metadata.is_file() {
-            match grep_file(filename.clone(), &grep_state) {
-                Err(e) => eprintln(format!("{}", e), !grep_state.no_messages),
-                Ok(iterator) => {
-                    for grep_data in iterator {
-                        if remaining_count <= 0 {
-                            return;
-                        }
-                        print_grep_data(&grep_data, &grep_state);
-                        remaining_count -= 1;
-                    }
-                }
-            }
-        }
-    }
+    drop(tx);
+    rx.iter().take(grep_state_clone.max_count as usize).for_each(|grep_data| {
+        print_grep_data(&grep_data, &grep_state_clone);
+    });
+    pool.join();
 }

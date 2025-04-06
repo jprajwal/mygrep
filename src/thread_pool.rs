@@ -42,7 +42,7 @@ where
                         i += 1;
                     }
                     if q.len() > 0 && w.len() < *c {
-                        let free_count = *c - w.len();
+                        let free_count = (*c - w.len()).min(q.len());
                         for _ in 0..free_count {
                             let job = q.pop_front().unwrap();
                             let handle = thread::spawn(job);
@@ -82,8 +82,11 @@ where
     }
 
     pub fn join(self) {
-        let mut quit = self.quit.lock().unwrap();
-        *quit = true;
+        {
+            let mut quit = self.quit.lock().unwrap();
+            *quit = true;
+        }
+        let _ = self.manager.join();
     }
 
     fn run_job(f: F) -> JoinHandle<()> {
