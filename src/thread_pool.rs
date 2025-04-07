@@ -6,9 +6,7 @@ pub struct ThreadPool<F>
 where
     F: FnOnce() + Send + 'static,
 {
-    count: Arc<Mutex<usize>>,
     queue: Arc<Mutex<VecDeque<F>>>,
-    workers: Arc<Mutex<Vec<JoinHandle<()>>>>,
     manager: JoinHandle<()>,
     quit: Arc<Mutex<bool>>,
 }
@@ -22,10 +20,8 @@ where
         let quit =  Arc::new(Mutex::new(false));
         let queue = Arc::new(Mutex::new(VecDeque::<F>::new()));
         let workers = Arc::new(Mutex::new(Vec::<JoinHandle<()>>::new())); 
-        let count_clone = count.clone();
         let quit_clone = quit.clone();
         let queue_clone = queue.clone();
-        let workers_clone = workers.clone();
 
         let handle = thread::spawn(move || {
             loop {
@@ -54,7 +50,7 @@ where
                         loop {
                             while w.len() > 0 {
                                 let h = w.pop().unwrap();
-                                h.join();
+                                let _ = h.join();
                             }
                             if q.len() == 0 {
                                 break;
@@ -72,9 +68,7 @@ where
             }
         });
         let this = Self {
-            count: count_clone,
             queue: queue_clone,
-            workers: workers_clone,
             manager: handle,
             quit: quit_clone,
         };
@@ -87,11 +81,6 @@ where
             *quit = true;
         }
         let _ = self.manager.join();
-    }
-
-    fn run_job(f: F) -> JoinHandle<()> {
-        let handle = thread::spawn(f);
-        return handle;
     }
 
     pub fn execute(&mut self, f: F) {

@@ -2,7 +2,7 @@ use clap::{ArgAction, Parser};
 use std::boxed::Box;
 use std::error::Error;
 use std::fs;
-use std::io::{BufRead, BufReader, Lines, Write};
+use std::io::{BufRead, BufReader, Lines};
 use std::iter::{Enumerate, Iterator};
 use std::sync::mpsc;
 
@@ -228,7 +228,7 @@ fn divide_files_by_workers(files: Vec<String>, n_workers: usize) -> Vec<Vec<Stri
     }
     result.push(collected_files);
     let n_workers = n_workers - 1;
-    let per_job = ((collected_dirs.len() as i32 - 1) / n_workers as i32);
+    let per_job = (collected_dirs.len() as i32 - 1) / n_workers as i32;
     if per_job < 0 {
         return result;
     }
