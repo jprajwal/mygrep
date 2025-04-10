@@ -230,7 +230,11 @@ impl<'a> Iterator for GrepDirIterator<'a> {
                     continue;
                 }
                 let filename = filename_res.unwrap();
-                let file_type = fs::metadata(&filename).unwrap().file_type();
+                let metadata_res = fs::metadata(&filename);
+                if metadata_res.is_err() {
+                    continue;
+                }
+                let file_type = metadata_res.unwrap().file_type();
                 if self.grep_state.devices == String::from("skip")
                     && (file_type.is_block_device() || file_type.is_fifo() || file_type.is_socket())
                 {
