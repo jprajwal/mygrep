@@ -4,6 +4,7 @@ use std::error::Error;
 use std::fs;
 use std::io::{BufRead, BufReader, Lines};
 use std::iter::{Enumerate, Iterator};
+use std::os::unix::fs::FileTypeExt;
 use std::sync::mpsc;
 
 mod thread_pool;
@@ -38,7 +39,19 @@ struct Args {
     line_number: bool,
 
     #[arg(short = 'H', long, action = ArgAction::SetTrue)]
-    no_filename: bool,
+    with_filename: bool,
+
+    #[arg(short = 'D', long, value_parser = ["read", "skip"], default_value = "skip")]
+    devices: String,
+
+    #[arg(short = 'r', long, action = ArgAction::SetTrue)]
+    recursive: bool,
+
+    #[arg(short = 'L', long, action = ArgAction::SetTrue)]
+    files_without_match: bool,
+
+    #[arg(short, long, action = ArgAction::SetTrue)]
+    count: bool,
 }
 
 #[derive(Debug)]
@@ -46,6 +59,16 @@ struct GrepData {
     line_number: u32,
     line: String,
     filename: String,
+}
+
+impl std::default::Default for GrepData {
+    fn default() -> Self {
+        Self {
+            line_number: 0,
+            line: String::new(),
+            filename: String::new(),
+        }
+    }
 }
 
 fn is_match(pattern: &String, line: &String) -> bool {
@@ -70,7 +93,11 @@ struct GrepState {
     no_messages: bool,
     max_count: u32,
     show_line_number: bool,
-    no_filename: bool,
+    with_filename: bool,
+    devices: String,
+    recursive: bool,
+    files_without_match: bool,
+    count: bool,
 }
 
 struct GrepIterator<'a, B: BufRead> {
@@ -136,7 +163,11 @@ fn grep_file<'a>(
 }
 
 fn print_grep_data<'a>(grep_data: &GrepData, grep_state: &GrepState) {
-    if !grep_state.no_filename {
+    if grep_state.files_without_match {
+        println!("{}", grep_data.filename);
+        return;
+    }
+    if grep_state.with_filename {
         print!("{}: ", grep_data.filename);
     }
     if grep_state.show_line_number {
@@ -183,15 +214,6 @@ impl<'a> Iterator for GrepDirIterator<'a> {
                 self.stack.push(Ok(dir_iter));
                 continue;
             }
-            if entry.metadata().unwrap().is_file() {
-                let filename_res = entry.path().into_os_string().into_string();
-                self.stack.push(Ok(dir_iter));
-                if filename_res.is_err() {
-                    continue;
-                }
-                let filename = filename_res.unwrap();
-                return Some(grep_file(filename, self.grep_state));
-            }
             if entry.metadata().unwrap().is_dir() {
                 let dirname_res = entry.path().into_os_string().into_string();
                 self.stack.push(Ok(dir_iter));
@@ -201,6 +223,28 @@ impl<'a> Iterator for GrepDirIterator<'a> {
                 let dirname = dirname_res.unwrap();
                 self.stack.push(fs::read_dir(&dirname));
                 continue;
+            } else {
+                let filename_res = entry.path().into_os_string().into_string();
+                self.stack.push(Ok(dir_iter));
+                if filename_res.is_err() {
+                    continue;
+                }
+                let filename = filename_res.unwrap();
+                let file_type = fs::metadata(&filename).unwrap().file_type();
+                if self.grep_state.devices == String::from("skip")
+                    && (file_type.is_block_device() || file_type.is_fifo() || file_type.is_socket())
+                {
+                    continue;
+                }
+                return Some(grep_file(filename.clone(), self.grep_state).map_err(|e| {
+                    std::io::Error::new(
+                        e.as_ref()
+                            .downcast_ref::<std::io::Error>()
+                            .map_or(std::io::ErrorKind::Other, |e| e.kind()),
+                        format!("{}: {}", filename, e),
+                    )
+                    .into()
+                }));
             }
         }
     }
@@ -220,10 +264,10 @@ fn divide_files_by_workers(files: Vec<String>, n_workers: usize) -> Vec<Vec<Stri
     let mut collected_dirs = Vec::new();
     for file in files.iter() {
         let metadata = fs::metadata(file).unwrap();
-        if metadata.is_file() {
-            collected_files.push(file.clone());
-        } else if metadata.is_dir() {
+        if metadata.is_dir() {
             collected_dirs.push(file.clone());
+        } else {
+            collected_files.push(file.clone());
         }
     }
     result.push(collected_files);
@@ -261,7 +305,11 @@ fn main() {
             .map(|x| if x == 0 { u32::MAX } else { x })
             .unwrap_or(u32::MAX),
         show_line_number: args.line_number,
-        no_filename: args.no_filename,
+        with_filename: args.with_filename,
+        devices: args.devices.clone(),
+        recursive: args.recursive,
+        files_without_match: args.files_without_match,
+        count: args.count,
     };
     let grep_state_clone = grep_state.clone();
 
@@ -283,37 +331,72 @@ fn main() {
                     );
                     continue;
                 }
-                let metadata = metadata_res.unwrap();
+                let metadata = metadata_res.unwrap().file_type();
                 if metadata.is_dir() {
+                    if grep_state_clone.recursive == false {
+                        eprintln(
+                            format!("mygrep: {}: Is a directory", filename),
+                            !grep_state_clone.no_messages,
+                        );
+                        continue;
+                    }
                     match grep_dir(&filename, &grep_state) {
                         Err(e) => eprintln(format!("{}", e), !grep_state.no_messages),
                         Ok(dir_iter) => {
                             for file_res in dir_iter {
                                 if file_res.is_err() {
                                     eprintln(
-                                        format!("{}", file_res.err().unwrap()),
+                                        format!("mygrep: {}", file_res.err().unwrap()),
                                         !grep_state.no_messages,
                                     );
                                     continue;
                                 }
                                 let file = file_res.unwrap();
+                                let name = file.filename.clone();
+                                let m = fs::metadata(&name).unwrap().file_type();
+                                if grep_state.devices == String::from("skip")
+                                    && (m.is_block_device() || m.is_fifo() || m.is_socket())
+                                {
+                                    continue;
+                                }
+                                let mut has_match = false;
                                 for grep_data in file {
-                                    if tx.send(grep_data).is_err() {
+                                    has_match = true;
+                                    if grep_state.files_without_match {
                                         break;
                                     }
+                                    let _ = tx.send(grep_data);
+                                }
+                                if !has_match && grep_state.files_without_match {
+                                    let mut grep_data = GrepData::default();
+                                    grep_data.filename = name.clone();
+                                    let _ = tx.send(grep_data);
                                 }
                             }
                         }
                     }
-                }
-                if metadata.is_file() {
+                } else if grep_state.devices == String::from("skip") && !metadata.is_file() {
+                    continue;
+                } else if metadata.is_file()
+                    || metadata.is_block_device()
+                    || metadata.is_fifo()
+                    || metadata.is_socket()
+                {
                     match grep_file(filename.clone(), &grep_state) {
                         Err(e) => eprintln(format!("{}", e), !grep_state.no_messages),
                         Ok(iterator) => {
+                            let mut has_match = false;
                             for grep_data in iterator {
-                                if tx.send(grep_data).is_err() {
+                                has_match = true;
+                                if grep_state.files_without_match {
                                     break;
                                 }
+                                let _ = tx.send(grep_data);
+                            }
+                            if !has_match && grep_state.files_without_match {
+                                let mut grep_data = GrepData::default();
+                                grep_data.filename = filename.clone();
+                                let _ = tx.send(grep_data);
                             }
                         }
                     }
@@ -322,8 +405,14 @@ fn main() {
         });
     }
     drop(tx);
-    rx.iter().take(grep_state_clone.max_count as usize).for_each(|grep_data| {
-        print_grep_data(&grep_data, &grep_state_clone);
-    });
+    let iter = rx.iter()
+        .take(grep_state_clone.max_count as usize);
+    if grep_state_clone.count {
+        println!("{}", iter.count());
+    } else {
+        iter.for_each(|grep_data| {
+            print_grep_data(&grep_data, &grep_state_clone);
+        });
+    }
     pool.join();
 }
