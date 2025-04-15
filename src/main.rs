@@ -6,8 +6,10 @@ use std::io::{BufRead, BufReader, Lines};
 use std::iter::{Enumerate, Iterator};
 use std::os::unix::fs::FileTypeExt;
 use std::sync::mpsc;
+use std::path::Path;
 
 mod thread_pool;
+mod glob;
 
 /// mygrep searches for PATTERNS in each FILE
 #[derive(Parser, Debug)]
@@ -52,6 +54,10 @@ struct Args {
 
     #[arg(short, long, action = ArgAction::SetTrue)]
     count: bool,
+
+    #[arg(long, action = ArgAction::Append)]
+    include: Option<Vec<String>>,
+
 }
 
 #[derive(Debug)]
@@ -98,6 +104,7 @@ struct GrepState {
     recursive: bool,
     files_without_match: bool,
     count: bool,
+    include: Option<Vec<String>>,
 }
 
 struct GrepIterator<'a, B: BufRead> {
@@ -314,6 +321,7 @@ fn main() {
         recursive: args.recursive,
         files_without_match: args.files_without_match,
         count: args.count,
+        include: args.include.clone(),
     };
     let grep_state_clone = grep_state.clone();
 
@@ -358,6 +366,30 @@ fn main() {
                                 let file = file_res.unwrap();
                                 let name = file.filename.clone();
                                 let m = fs::metadata(&name).unwrap().file_type();
+                                if grep_state.include.is_some() {
+                                    let mut has_match = false;
+                                    let globs = grep_state.include.as_ref().unwrap();
+                                    for g in globs {
+                                        if *g == name {
+                                            has_match = true;
+                                            break;
+                                        }
+                                        let basename_res = Path::new(&name).file_name();
+                                        if basename_res.is_none() {
+                                            continue;
+                                        }
+                                        let basename = basename_res.unwrap();
+                                        // TODO: do something other than using unwrap
+                                        let basename_str = basename.to_str().unwrap();
+                                        if glob::Glob::new(g).is_match(&basename_str) {
+                                            has_match = true;
+                                            break;
+                                        }
+                                    }
+                                    if !has_match {
+                                        continue;
+                                    }
+                                }
                                 if grep_state.devices == String::from("skip")
                                     && (m.is_block_device() || m.is_fifo() || m.is_socket())
                                 {
@@ -386,6 +418,30 @@ fn main() {
                     || metadata.is_fifo()
                     || metadata.is_socket()
                 {
+                    if grep_state.include.is_some() {
+                        let mut has_match = false;
+                        let globs = grep_state.include.as_ref().unwrap();
+                        for g in globs {
+                            if *g == *filename {
+                                has_match = true;
+                                break;
+                            }
+                            let basename_res = Path::new(&filename).file_name();
+                            if basename_res.is_none() {
+                                continue;
+                            }
+                            let basename = basename_res.unwrap();
+                            // TODO: do something other than using unwrap
+                            let basename_str = basename.to_str().unwrap();
+                            if glob::Glob::new(g).is_match(&basename_str) {
+                                has_match = true;
+                                break;
+                            }
+                        }
+                        if !has_match {
+                            continue;
+                        }
+                    }
                     match grep_file(filename.clone(), &grep_state) {
                         Err(e) => eprintln(format!("{}", e), !grep_state.no_messages),
                         Ok(iterator) => {
