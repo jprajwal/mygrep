@@ -480,6 +480,30 @@ fn main() {
                             continue;
                         }
                     }
+                    if grep_state.exclude.is_some() {
+                        let mut has_match = false;
+                        let globs = grep_state.exclude.as_ref().unwrap();
+                        for g in globs {
+                            if *g == *filename {
+                                has_match = true;
+                                break;
+                            }
+                            let basename_res = Path::new(&filename).file_name();
+                            if basename_res.is_none() {
+                                continue;
+                            }
+                            let basename = basename_res.unwrap();
+                            // TODO: do something other than using unwrap
+                            let basename_str = basename.to_str().unwrap();
+                            if glob::Glob::new(g).is_match(&basename_str) {
+                                has_match = true;
+                                break;
+                            }
+                        }
+                        if has_match {
+                            continue;
+                        }
+                    }
                     match grep_file(filename.clone(), &grep_state) {
                         Err(e) => eprintln(format!("{}", e), !grep_state.no_messages),
                         Ok(iterator) => {
