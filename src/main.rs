@@ -31,33 +31,45 @@ struct Args {
     #[arg(short = 'v', long, action = ArgAction::SetTrue)]
     invert_match: bool,
 
+    /// suppress error messages
     #[arg(short = 's', long, action = ArgAction::SetTrue)]
     no_messages: bool,
 
+    /// stop after max-count selected lines
     #[arg(short = 'm', long)]
     max_count: Option<u32>,
 
+    /// print line numbers with output lines
     #[arg(short = 'n', long, action = ArgAction::SetTrue)]
     line_number: bool,
 
+    /// print filename with output lines
     #[arg(short = 'H', long, action = ArgAction::SetTrue)]
     with_filename: bool,
 
+    /// how to handle devices, FIFOs and sockets
     #[arg(short = 'D', long, value_parser = ["read", "skip"], default_value = "skip")]
     devices: String,
 
+    /// whether to recurse directories or just ignore them
     #[arg(short = 'r', long, action = ArgAction::SetTrue)]
     recursive: bool,
 
+    /// print only names of files with no selected lines
     #[arg(short = 'L', long, action = ArgAction::SetTrue)]
     files_without_match: bool,
 
+    /// print only a count of selected lines per file
     #[arg(short, long, action = ArgAction::SetTrue)]
     count: bool,
 
+    /// --include=GLOB; search only files that match GLOB (a file pattern)
     #[arg(long, action = ArgAction::Append)]
     include: Option<Vec<String>>,
 
+    /// --exclude=GLOB; skip files that match GLOB
+    #[arg(long, action = ArgAction::Append)]
+    exclude: Option<Vec<String>>,
 }
 
 #[derive(Debug)]
@@ -105,6 +117,7 @@ struct GrepState {
     files_without_match: bool,
     count: bool,
     include: Option<Vec<String>>,
+    exclude: Option<Vec<String>>,
 }
 
 struct GrepIterator<'a, B: BufRead> {
@@ -322,6 +335,7 @@ fn main() {
         files_without_match: args.files_without_match,
         count: args.count,
         include: args.include.clone(),
+        exclude: args.exclude.clone(),
     };
     let grep_state_clone = grep_state.clone();
 
@@ -387,6 +401,30 @@ fn main() {
                                         }
                                     }
                                     if !has_match {
+                                        continue;
+                                    }
+                                }
+                                if grep_state.exclude.is_some() {
+                                    let mut has_match = false;
+                                    let globs = grep_state.exclude.as_ref().unwrap();
+                                    for g in globs {
+                                        if *g == name {
+                                            has_match = true;
+                                            break;
+                                        }
+                                        let basename_res = Path::new(&name).file_name();
+                                        if basename_res.is_none() {
+                                            continue;
+                                        }
+                                        let basename = basename_res.unwrap();
+                                        // TODO: do something other than using unwrap
+                                        let basename_str = basename.to_str().unwrap();
+                                        if glob::Glob::new(g).is_match(&basename_str) {
+                                            has_match = true;
+                                            break;
+                                        }
+                                    }
+                                    if has_match {
                                         continue;
                                     }
                                 }
