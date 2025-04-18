@@ -1,15 +1,16 @@
 use clap::{ArgAction, Parser};
 use std::boxed::Box;
+use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
 use std::io::{BufRead, BufReader, Lines};
 use std::iter::{Enumerate, Iterator};
 use std::os::unix::fs::FileTypeExt;
-use std::sync::mpsc;
 use std::path::Path;
+use std::sync::mpsc;
 
-mod thread_pool;
 mod glob;
+mod thread_pool;
 
 /// mygrep searches for PATTERNS in each FILE
 #[derive(Parser, Debug)]
@@ -527,14 +528,25 @@ fn main() {
         });
     }
     drop(tx);
-    let iter = rx.iter()
-        .take(grep_state_clone.max_count as usize);
-    if grep_state_clone.count {
-        println!("{}", iter.count());
-    } else {
-        iter.for_each(|grep_data| {
-            print_grep_data(&grep_data, &grep_state_clone);
+    let mut map: HashMap<String, usize> = HashMap::new();
+    rx.iter()
+        .take(grep_state_clone.max_count as usize)
+        .for_each(|grep_data| {
+            if grep_state_clone.count {
+                map.entry(grep_data.filename.clone())
+                    .and_modify(|x| *x += 1)
+                    .or_insert(1);
+            } else {
+                print_grep_data(&grep_data, &grep_state_clone);
+            }
         });
+    if grep_state_clone.count {
+        for (filename, v) in map.iter() {
+            if grep_state_clone.with_filename {
+                print!("{}: ", filename);
+            }
+            println!("{}", v);
+        }
     }
     pool.join();
 }
