@@ -11,6 +11,7 @@ use std::sync::mpsc;
 
 mod glob;
 mod thread_pool;
+mod regex;
 
 /// mygrep searches for PATTERNS in each FILE
 #[derive(Parser, Debug)]
