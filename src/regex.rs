@@ -68,6 +68,7 @@ impl LiteralRegex {
 impl RegexTrait for LiteralRegex {
     fn evaluate(&self, data: &[u8], start: usize, _match_state: &mut MatchState) -> Result<usize, ()> {
         let mut i = 0usize;
+        println!("literal regex = {}", str::from_utf8(self.regex.as_slice()).unwrap());
         while i < self.regex.len() {
             if start + i >= data.len() || self.regex[i] != data[start + i] {
                 return Err(());
@@ -191,19 +192,20 @@ impl IntervalRegex {
 impl RegexTrait for IntervalRegex {
     fn evaluate(&self, data: &[u8], start: usize, match_state: &mut MatchState) -> Result<usize, ()> {
         let mut i = 0;
-        let (mut atleast, mut atmost) = (0usize, 0usize);
-        while start + i < data.len() && atleast < self.atleast {
+        let mut count = 0usize;
+        while count < self.atleast {
             let step_count = self.regex.evaluate(data, start + i, match_state)?;
             i += step_count;
-            atleast += 1;
+            count += 1;
         }
-        while start + i < data.len() && atmost < self.atmost {
+        while count < self.atmost {
             let step_count = self.regex.evaluate(data, start + i, match_state).or::<()>(Ok(0usize)).unwrap();
+            println!("step_count = {}", step_count);
             if step_count == 0 {
                  return Ok(i);
             }
             i += step_count;
-            atmost += 1;
+            count += 1;
         }
         return Ok(i);
     }
@@ -219,10 +221,13 @@ impl RegexTrait for Regex {
         let mut i = 0;
         let mut begin = start;
         for expr in self.expr_list.iter() {
-            if begin + i >= data.len() {
+            if begin + i > data.len() {
                 return Err(());
             }
             i += expr.evaluate(data, begin + i, match_state)?;
+        }
+        if i < data.len() {
+            return Err(());
         }
         return Ok(i);
     }
@@ -324,13 +329,11 @@ pub fn parse_regex(expr: &[u8]) -> Result<Regex, ()> {
     let mut i = 0;
     while i < expr.len() {
         match expr[i] as char {
-            '[' => {
-                if !state.character_class_parsing_in_progress {
-                    state.character_class_parsing_in_progress = true;
-                    state.stack.push(i);
-                }
+            '[' if !state.character_class_parsing_in_progress && !state.backslash_present => {
+                state.character_class_parsing_in_progress = true;
+                state.stack.push(i);
             },
-            ']' if state.character_class_parsing_in_progress => {
+            ']' if state.character_class_parsing_in_progress && !state.backslash_present => {
                 let pop_opt = state.stack.pop();
                 if pop_opt.is_none() {
                     unreachable!();
@@ -446,6 +449,11 @@ pub fn parse_regex(expr: &[u8]) -> Result<Regex, ()> {
                         i += 1;
                         continue;
                     }
+                    if state.literal_string_in_progress && state.literal_string.len() > 0 {
+                        state.literal_string_in_progress = false;
+                        regex_builder = regex_builder.create_literal_regex(state.literal_string.as_slice());
+                        state.literal_string.clear();
+                    }
                     let first_num = first_num_res.unwrap();
                     regex_builder = regex_builder.create_interval_expr_regex(first_num, first_num);
                 } else {
@@ -460,23 +468,48 @@ pub fn parse_regex(expr: &[u8]) -> Result<Regex, ()> {
                         i += 1;
                         continue;
                     }
-
+                    if state.literal_string_in_progress && state.literal_string.len() > 0 {
+                        state.literal_string_in_progress = false;
+                        regex_builder = regex_builder.create_literal_regex(state.literal_string.as_slice());
+                        state.literal_string.clear();
+                    }
                     let first_num = first_num_res.unwrap_or_default();
                     let second_num = second_res.unwrap_or(usize::MAX);
                     regex_builder = regex_builder.create_interval_expr_regex(first_num, second_num);
                 }
             },
             _ => {
-                if !state.literal_string_in_progress {
-                    regex_builder = regex_builder
-                        .create_literal_regex(state.literal_string.as_slice());
-                    state.literal_string.clear();
+                if state.backslash_present && !match expr[i] as char {
+                    '*' | '+' | '?' | '.' | '$' | '^' | '[' | ']' => true,
+                    _ => false,
+                } {
+                    return Err(());
                 }
-                state.literal_string_in_progress = true;
+                if state.interval_expr_parsing_in_progress {
+                    i += 1;
+                    continue;
+                }
+                if !state.literal_string_in_progress {
+                    if state.literal_string.len() > 0 {
+                        regex_builder = regex_builder
+                            .create_literal_regex(state.literal_string.as_slice());
+                        state.literal_string.clear();
+                    }
+                    state.literal_string_in_progress = true;
+                }
                 state.literal_string.push(expr[i]);
+                if state.backslash_present {
+                    state.backslash_present = false;
+                }
             },
         }
         i += 1;
+    }
+    if state.literal_string_in_progress && state.literal_string.len() > 0 {
+        state.literal_string_in_progress = false;
+        regex_builder = regex_builder
+            .create_literal_regex(state.literal_string.as_slice());
+        state.literal_string.clear();
     }
     Ok(regex_builder.build())
 }
@@ -505,11 +538,137 @@ mod tests {
     }
 
     #[test]
-    fn test_interval_regex() {
-        let regex_str = "test{0,1}";
+    fn test_interval_regex_match_01() {
+        let regex_str = "test{1,2}";
         let res = parse_regex(regex_str.as_bytes());
         let regex = res.unwrap();
         let data = "testtest";
-        assert_eq!(Ok(data.len()-4), regex.evaluate(data.as_bytes(), 0, &mut MatchState{}));
+        assert_eq!(Ok(data.len()), regex.evaluate(data.as_bytes(), 0, &mut MatchState{}));
+    }
+
+    #[test]
+    fn test_interval_regex_match_02() {
+        let regex_str = "test{0,1}";
+        let res = parse_regex(regex_str.as_bytes());
+        let regex = res.unwrap();
+        let data = "";
+        assert_eq!(Ok(0), regex.evaluate(data.as_bytes(), 0, &mut MatchState{}));
+    }
+
+    #[test]
+    fn test_interval_regex_match_04() {
+        let regex_str = "test{1,2}";
+        let res = parse_regex(regex_str.as_bytes());
+        let regex = res.unwrap();
+        let data = "testtest";
+        assert_eq!(Ok(8), regex.evaluate(data.as_bytes(), 0, &mut MatchState{}));
+    }
+
+    #[test]
+    fn test_interval_regex_match_05() {
+        let regex_str = "test{1,2}test";
+        let res = parse_regex(regex_str.as_bytes());
+        let regex = res.unwrap();
+        let data_1 = "testtesttest";
+        assert_eq!(Ok(12), regex.evaluate(data_1.as_bytes(), 0, &mut MatchState{}));
+    }
+
+    #[test]
+    fn test_interval_regex_match_06() {
+        let regex_str = "test{1,2}test";
+        let res = parse_regex(regex_str.as_bytes());
+        let regex = res.unwrap();
+        let data_1 = "testtesttest";
+        assert_eq!(Ok(12), regex.evaluate(data_1.as_bytes(), 0, &mut MatchState{}));
+    }
+
+    #[test]
+    fn test_interval_regex_match_07() {
+        let regex_str = "test{1,1}";
+        let res = parse_regex(regex_str.as_bytes());
+        let regex = res.unwrap();
+        let data_1 = "test";
+        assert_eq!(Ok(4), regex.evaluate(data_1.as_bytes(), 0, &mut MatchState{}));
+    }
+
+    #[test]
+    fn test_interval_regex_match_08() {
+        let regex_str = "test{1,}";
+        let res = parse_regex(regex_str.as_bytes());
+        let regex = res.unwrap();
+        let data_1 = "testtesttest";
+        assert_eq!(Ok(12), regex.evaluate(data_1.as_bytes(), 0, &mut MatchState{}));
+    }
+
+    #[test]
+    fn test_interval_regex_match_09() {
+        let regex_str = "test{,3}";
+        let res = parse_regex(regex_str.as_bytes());
+        let regex = res.unwrap();
+        let data_1 = "testtesttest";
+        assert_eq!(Ok(12), regex.evaluate(data_1.as_bytes(), 0, &mut MatchState{}));
+    }
+
+    #[test]
+    fn test_interval_regex_match_10() {
+        let regex_str = "test{1,1}";
+        let res = parse_regex(regex_str.as_bytes());
+        let regex = res.unwrap();
+        let data_1 = "test";
+        assert_eq!(Ok(4), regex.evaluate(data_1.as_bytes(), 0, &mut MatchState{}));
+    }
+
+    #[test]
+    fn test_interval_regex_match_11() {
+        let regex_str = "test{1}";
+        let res = parse_regex(regex_str.as_bytes());
+        let regex = res.unwrap();
+        let data_1 = "test";
+        assert_eq!(Ok(4), regex.evaluate(data_1.as_bytes(), 0, &mut MatchState{}));
+    }
+
+    #[test]
+    fn test_interval_regex_mismatch_01() {
+        let regex_str = "test{1,1}";
+        let res = parse_regex(regex_str.as_bytes());
+        let regex = res.unwrap();
+        let data = "";
+        assert_eq!(Err(()), regex.evaluate(data.as_bytes(), 0, &mut MatchState{}));
+    }
+
+    #[test]
+    fn test_interval_regex_mismatch_02() {
+        let regex_str = "test{1,2}";
+        let res = parse_regex(regex_str.as_bytes());
+        let regex = res.unwrap();
+        let data = "testtesttest";
+        assert_eq!(Err(()), regex.evaluate(data.as_bytes(), 0, &mut MatchState{}));
+    }
+
+    #[test]
+    fn test_interval_regex_mismatch_03() {
+        let regex_str = "test{1,1}";
+        let res = parse_regex(regex_str.as_bytes());
+        let regex = res.unwrap();
+        let data = "testtesttest";
+        assert_eq!(Err(()), regex.evaluate(data.as_bytes(), 0, &mut MatchState{}));
+    }
+
+    #[test]
+    fn test_interval_regex_mismatch_04() {
+        let regex_str = "test{3,}";
+        let res = parse_regex(regex_str.as_bytes());
+        let regex = res.unwrap();
+        let data = "testtest";
+        assert_eq!(Err(()), regex.evaluate(data.as_bytes(), 0, &mut MatchState{}));
+    }
+
+    #[test]
+    fn test_interval_regex_mismatch_05() {
+        let regex_str = "test{,1}";
+        let res = parse_regex(regex_str.as_bytes());
+        let regex = res.unwrap();
+        let data = "testtest";
+        assert_eq!(Err(()), regex.evaluate(data.as_bytes(), 0, &mut MatchState{}));
     }
 }
