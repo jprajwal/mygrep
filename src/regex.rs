@@ -107,7 +107,20 @@ impl DotRegex {
 
 impl RegexTrait for DotRegex {
     fn evaluate(&self, data: &[u8], start: usize, _match_state: &mut MatchState) -> Result<usize, ()> {
-        todo!()
+        let mut i = 0;
+        if start + i >= data.len() {
+            return Err(());
+        }
+        while start + i < data.len() {
+            let ch = data[start + i] as char;
+            match ch {
+                '-' | '_' | 'a'..'z' | 'A'..'Z' | '0'..'9' | ' ' | '\t' | '\r' | '\n' => {
+                    i += 1;
+                },
+                _ => break,
+            }
+        }
+        return Ok(i);
     }
 }
 
@@ -344,6 +357,7 @@ pub fn parse_regex(expr: &[u8]) -> Result<Regex, ()> {
                         state.stack.push(start);
                         if !state.literal_string_in_progress {
                             state.literal_string.clear();
+                            state.literal_string_in_progress = true;
                         }
                         state.literal_string.push(expr[i]);
                     } else {
@@ -372,8 +386,14 @@ pub fn parse_regex(expr: &[u8]) -> Result<Regex, ()> {
             },
             '?' if !state.character_class_parsing_in_progress && !state.backslash_present => {
                 if state.literal_string_in_progress {
-                    regex_builder = regex_builder
-                        .create_literal_regex(state.literal_string.as_slice());
+                    if state.literal_string.len() == 1 {
+                        regex_builder = regex_builder
+                            .create_literal_regex(state.literal_string.as_slice());
+                    } else {
+                        regex_builder = regex_builder
+                            .create_literal_regex(&state.literal_string.as_slice()[0..state.literal_string.len()-1])
+                            .create_literal_regex(&state.literal_string.as_slice()[state.literal_string.len()-1..state.literal_string.len()]);
+                    }
                     state.literal_string.clear();
                     state.literal_string_in_progress = false;
                 }
@@ -381,8 +401,14 @@ pub fn parse_regex(expr: &[u8]) -> Result<Regex, ()> {
             },
             '*' if !state.character_class_parsing_in_progress && !state.backslash_present => {
                 if state.literal_string_in_progress {
-                    regex_builder = regex_builder
-                        .create_literal_regex(state.literal_string.as_slice());
+                    if state.literal_string.len() == 1 {
+                        regex_builder = regex_builder
+                            .create_literal_regex(state.literal_string.as_slice());
+                    } else {
+                        regex_builder = regex_builder
+                            .create_literal_regex(&state.literal_string.as_slice()[0..state.literal_string.len()-1])
+                            .create_literal_regex(&state.literal_string.as_slice()[state.literal_string.len()-1..state.literal_string.len()]);
+                    }
                     state.literal_string.clear();
                     state.literal_string_in_progress = false;
                 }
@@ -390,8 +416,14 @@ pub fn parse_regex(expr: &[u8]) -> Result<Regex, ()> {
             },
             '+' if !state.character_class_parsing_in_progress && !state.backslash_present => {
                 if state.literal_string_in_progress {
-                    regex_builder = regex_builder
-                        .create_literal_regex(state.literal_string.as_slice());
+                    if state.literal_string.len() == 1 {
+                        regex_builder = regex_builder
+                            .create_literal_regex(state.literal_string.as_slice());
+                    } else {
+                        regex_builder = regex_builder
+                            .create_literal_regex(&state.literal_string.as_slice()[0..state.literal_string.len()-1])
+                            .create_literal_regex(&state.literal_string.as_slice()[state.literal_string.len()-1..state.literal_string.len()]);
+                    }
                     state.literal_string.clear();
                     state.literal_string_in_progress = false;
                 }
@@ -408,8 +440,8 @@ pub fn parse_regex(expr: &[u8]) -> Result<Regex, ()> {
                     unreachable!();
                 }
                 let start = opt.unwrap();
-                let interval_slice = &expr[start+1..i];
-                let interval_data = str::from_utf8(interval_slice).map_err(|_| ())?;
+                let interval_slice = &expr[start..i+1];
+                let interval_data = str::from_utf8(&interval_slice[1..interval_slice.len()-1]).map_err(|_| ())?;
                 // case 1: {}: treat it as literal
                 // case 2: {,}: treat it as literal
                 // case 3: {a}: treat it as literal
@@ -451,7 +483,14 @@ pub fn parse_regex(expr: &[u8]) -> Result<Regex, ()> {
                     }
                     if state.literal_string_in_progress && state.literal_string.len() > 0 {
                         state.literal_string_in_progress = false;
-                        regex_builder = regex_builder.create_literal_regex(state.literal_string.as_slice());
+                        if state.literal_string.len() == 1 {
+                            regex_builder = regex_builder
+                                .create_literal_regex(state.literal_string.as_slice());
+                        } else {
+                            regex_builder = regex_builder
+                                .create_literal_regex(&state.literal_string.as_slice()[0..state.literal_string.len()-1])
+                                .create_literal_regex(&state.literal_string.as_slice()[state.literal_string.len()-1..state.literal_string.len()]);
+                        }
                         state.literal_string.clear();
                     }
                     let first_num = first_num_res.unwrap();
@@ -470,7 +509,14 @@ pub fn parse_regex(expr: &[u8]) -> Result<Regex, ()> {
                     }
                     if state.literal_string_in_progress && state.literal_string.len() > 0 {
                         state.literal_string_in_progress = false;
-                        regex_builder = regex_builder.create_literal_regex(state.literal_string.as_slice());
+                        if state.literal_string.len() == 1 {
+                            regex_builder = regex_builder
+                                .create_literal_regex(state.literal_string.as_slice());
+                        } else {
+                            regex_builder = regex_builder
+                                .create_literal_regex(&state.literal_string.as_slice()[0..state.literal_string.len()-1])
+                                .create_literal_regex(&state.literal_string.as_slice()[state.literal_string.len()-1..state.literal_string.len()]);
+                        }
                         state.literal_string.clear();
                     }
                     let first_num = first_num_res.unwrap_or_default();
@@ -542,7 +588,7 @@ mod tests {
         let regex_str = "test{1,2}";
         let res = parse_regex(regex_str.as_bytes());
         let regex = res.unwrap();
-        let data = "testtest";
+        let data = "test";
         assert_eq!(Ok(data.len()), regex.evaluate(data.as_bytes(), 0, &mut MatchState{}));
     }
 
@@ -551,8 +597,8 @@ mod tests {
         let regex_str = "test{0,1}";
         let res = parse_regex(regex_str.as_bytes());
         let regex = res.unwrap();
-        let data = "";
-        assert_eq!(Ok(0), regex.evaluate(data.as_bytes(), 0, &mut MatchState{}));
+        let data = "tes";
+        assert_eq!(Ok(3), regex.evaluate(data.as_bytes(), 0, &mut MatchState{}));
     }
 
     #[test]
@@ -560,8 +606,8 @@ mod tests {
         let regex_str = "test{1,2}";
         let res = parse_regex(regex_str.as_bytes());
         let regex = res.unwrap();
-        let data = "testtest";
-        assert_eq!(Ok(8), regex.evaluate(data.as_bytes(), 0, &mut MatchState{}));
+        let data = "testt";
+        assert_eq!(Ok(5), regex.evaluate(data.as_bytes(), 0, &mut MatchState{}));
     }
 
     #[test]
@@ -569,21 +615,12 @@ mod tests {
         let regex_str = "test{1,2}test";
         let res = parse_regex(regex_str.as_bytes());
         let regex = res.unwrap();
-        let data_1 = "testtesttest";
-        assert_eq!(Ok(12), regex.evaluate(data_1.as_bytes(), 0, &mut MatchState{}));
+        let data_1 = "testttest";
+        assert_eq!(Ok(9), regex.evaluate(data_1.as_bytes(), 0, &mut MatchState{}));
     }
 
     #[test]
     fn test_interval_regex_match_06() {
-        let regex_str = "test{1,2}test";
-        let res = parse_regex(regex_str.as_bytes());
-        let regex = res.unwrap();
-        let data_1 = "testtesttest";
-        assert_eq!(Ok(12), regex.evaluate(data_1.as_bytes(), 0, &mut MatchState{}));
-    }
-
-    #[test]
-    fn test_interval_regex_match_07() {
         let regex_str = "test{1,1}";
         let res = parse_regex(regex_str.as_bytes());
         let regex = res.unwrap();
@@ -592,21 +629,21 @@ mod tests {
     }
 
     #[test]
-    fn test_interval_regex_match_08() {
+    fn test_interval_regex_match_07() {
         let regex_str = "test{1,}";
         let res = parse_regex(regex_str.as_bytes());
         let regex = res.unwrap();
-        let data_1 = "testtesttest";
-        assert_eq!(Ok(12), regex.evaluate(data_1.as_bytes(), 0, &mut MatchState{}));
+        let data_1 = "testtttt";
+        assert_eq!(Ok(data_1.len()), regex.evaluate(data_1.as_bytes(), 0, &mut MatchState{}));
     }
 
     #[test]
-    fn test_interval_regex_match_09() {
+    fn test_interval_regex_match_08() {
         let regex_str = "test{,3}";
         let res = parse_regex(regex_str.as_bytes());
         let regex = res.unwrap();
-        let data_1 = "testtesttest";
-        assert_eq!(Ok(12), regex.evaluate(data_1.as_bytes(), 0, &mut MatchState{}));
+        let data_1 = "testt";
+        assert_eq!(Ok(5), regex.evaluate(data_1.as_bytes(), 0, &mut MatchState{}));
     }
 
     #[test]
@@ -641,7 +678,7 @@ mod tests {
         let regex_str = "test{1,2}";
         let res = parse_regex(regex_str.as_bytes());
         let regex = res.unwrap();
-        let data = "testtesttest";
+        let data = "tes";
         assert_eq!(Err(()), regex.evaluate(data.as_bytes(), 0, &mut MatchState{}));
     }
 
@@ -650,7 +687,7 @@ mod tests {
         let regex_str = "test{1,1}";
         let res = parse_regex(regex_str.as_bytes());
         let regex = res.unwrap();
-        let data = "testtesttest";
+        let data = "testt";
         assert_eq!(Err(()), regex.evaluate(data.as_bytes(), 0, &mut MatchState{}));
     }
 
@@ -659,7 +696,7 @@ mod tests {
         let regex_str = "test{3,}";
         let res = parse_regex(regex_str.as_bytes());
         let regex = res.unwrap();
-        let data = "testtest";
+        let data = "testt";
         assert_eq!(Err(()), regex.evaluate(data.as_bytes(), 0, &mut MatchState{}));
     }
 
@@ -668,7 +705,97 @@ mod tests {
         let regex_str = "test{,1}";
         let res = parse_regex(regex_str.as_bytes());
         let regex = res.unwrap();
-        let data = "testtest";
+        let data = "tesa";
         assert_eq!(Err(()), regex.evaluate(data.as_bytes(), 0, &mut MatchState{}));
+    }
+
+    #[test]
+    fn test_invalid_interval_01() {
+        let regex_str = "test{a,b}";
+        let res = parse_regex(regex_str.as_bytes());
+        let regex = res.unwrap();
+        let data = "test{a,b}";
+        assert_eq!(Ok(9), regex.evaluate(data.as_bytes(), 0, &mut MatchState{}));
+    }
+
+    #[test]
+    fn test_invalid_interval_02() {
+        let regex_str = "test{1,b}";
+        let res = parse_regex(regex_str.as_bytes());
+        let regex = res.unwrap();
+        let data = "test{1,b}";
+        assert_eq!(Ok(9), regex.evaluate(data.as_bytes(), 0, &mut MatchState{}));
+    }
+
+    #[test]
+    fn test_dot_regex_01() {
+        let regex_str = "test.*";
+        let regex = parse_regex(regex_str.as_bytes()).unwrap();
+        let data = "testa";
+        assert_eq!(Ok(5), regex.evaluate(data.as_bytes(), 0, &mut MatchState{}));
+    }
+
+    #[test]
+    fn test_dot_regex_02() {
+        let regex_str = "test.*";
+        let regex = parse_regex(regex_str.as_bytes()).unwrap();
+        let data = "test_data";
+        assert_eq!(Ok(9), regex.evaluate(data.as_bytes(), 0, &mut MatchState{}));
+    }
+
+    #[test]
+    fn test_dot_regex_03() {
+        let regex_str = "test.*";
+        let regex = parse_regex(regex_str.as_bytes()).unwrap();
+        let data = "test data test data";
+        assert_eq!(Ok(19), regex.evaluate(data.as_bytes(), 0, &mut MatchState{}));
+    }
+
+    #[test]
+    fn test_dot_regex_04() {
+        let regex_str = "test.*";
+        let regex = parse_regex(regex_str.as_bytes()).unwrap();
+        let data = "test data\ntest data";
+        assert_eq!(Ok(19), regex.evaluate(data.as_bytes(), 0, &mut MatchState{}));
+    }
+
+    #[test]
+    fn test_dot_regex_05() {
+        let regex_str = "test.*";
+        let regex = parse_regex(regex_str.as_bytes()).unwrap();
+        let data = "test data\r\ntest data";
+        assert_eq!(Ok(20), regex.evaluate(data.as_bytes(), 0, &mut MatchState{}));
+    }
+
+    #[test]
+    fn test_dot_regex_06() {
+        let regex_str = "test.*";
+        let regex = parse_regex(regex_str.as_bytes()).unwrap();
+        let data = "test";
+        assert_eq!(Ok(4), regex.evaluate(data.as_bytes(), 0, &mut MatchState{}));
+    }
+
+    #[test]
+    fn test_one_or_more_regex_01() {
+        let regex_str = "test.+";
+        let regex = parse_regex(regex_str.as_bytes()).unwrap();
+        let data = "test data\r\ntest data";
+        assert_eq!(Ok(20), regex.evaluate(data.as_bytes(), 0, &mut MatchState{}));
+    }
+
+    #[test]
+    fn test_one_or_more_regex_02() {
+        let regex_str = "test.+";
+        let regex = parse_regex(regex_str.as_bytes()).unwrap();
+        let data = "test";
+        assert_eq!(Err(()), regex.evaluate(data.as_bytes(), 0, &mut MatchState{}));
+    }
+
+    #[test]
+    fn test_one_or_more_regex_03() {
+        let regex_str = "test+";
+        let regex = parse_regex(regex_str.as_bytes()).unwrap();
+        let data = "testt";
+        assert_eq!(Ok(5), regex.evaluate(data.as_bytes(), 0, &mut MatchState{}));
     }
 }
